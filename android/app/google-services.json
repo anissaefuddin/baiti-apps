@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "824479873111",
+    "firebase_url": "https://katapp-907aa.firebaseio.com",
+    "project_id": "katapp-907aa",
+    "storage_bucket": "katapp-907aa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:824479873111:android:e60f997c93235f6d50cb12",
+        "android_client_info": {
+          "package_name": "app.maloka.catat"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "824479873111-fikokqbrm72uuhkfgp2r58lvt7kr6gh3.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "app.maloka.catat",
+            "certificate_hash": "6716b0bba454b6a9bb26b6266b2fede2c766e082"
+          }
+        },
+        {
+          "client_id": "824479873111-hl2mt61ateisc8i3u1en5b86u3jps0vp.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIfOysj0clhhywR4lJa9VMVNp8pD3Xw3Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "824479873111-hl2mt61ateisc8i3u1en5b86u3jps0vp.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

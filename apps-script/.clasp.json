@@ -1,0 +1,19 @@
+{
+  "scriptId": "12h_ns41rdwr9yId6XcwjzXacY2O4j_pKEDTXgNW-e6pMudONigWyw51a",
+  "rootDir": ".",
+  "filePushOrder": [
+    "appsscript.json",
+    "config.js",
+    "utils.js",
+    "sheets.js",
+    "token.js",
+    "auth.js",
+    "rooms.js",
+    "customers.js",
+    "transactions.js",
+    "payments.js",
+    "reports.js",
+    "setup.js",
+    "main.js"
+  ]
+}

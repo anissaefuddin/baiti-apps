@@ -1,0 +1,570 @@
+# project.me — catat-app
+# Room / Guesthouse Booking Management System
+# Single Source of Truth · Last updated: 2026-04-02
+
+---
+
+## 1. PROJECT SUMMARY
+
+**Name:** catat-app
+**Type:** Mobile application (Android-first)
+**Domain:** Small accommodation business management (guest houses, kos, penginapan)
+
+### Problem
+Small accommodation owners in Indonesia manage bookings manually — via WhatsApp, physical notebooks, or Excel — leading to double bookings, lost payment records, and no clear reporting.
+
+### Solution
+A lightweight, low-cost mobile app that centralizes bookings, customers, payments, and room availability using Google's free ecosystem (Sheets, Calendar, Drive) as the backend infrastructure.
+
+### Target Users
+- Non-technical accommodation owners and staff
+- Single-property or small multi-room operations (2–30 rooms)
+- Indonesian market (KTP/NIK as customer identifier)
+
+### Key Value Propositions
+- Zero backend hosting cost (Google ecosystem only)
+- OCR from KTP photo — no manual customer data entry
+- Google Calendar sync — visual availability at a glance
+- PDF invoice/receipt generation on-device
+- Works on any Android phone with internet access
+
+---
+
+## 2. ARCHITECTURE OVERVIEW
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    FLUTTER APP (Android)                 │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │
+│  │  Auth    │  │ Booking  │  │ Reports  │  │Calendar│  │
+│  │ Screen   │  │  CRUD    │  │Dashboard │  │  View  │  │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘  │
+│       │              │              │             │      │
+│       └──────────────┴──────────────┴─────────────┘     │
+│                            │                            │
+│                    HTTP POST (JSON)                      │
+│                  { action, token, data }                 │
+└────────────────────────────┼────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│              GOOGLE APPS SCRIPT (Web App)               │
+│                                                         │
+│  • Verify Google ID token (tokeninfo endpoint)          │
+│  • Route action to handler function                     │
+│  • LockService wraps all writes                         │
+│  • Returns { success, data, error, timestamp }          │
+│                                                         │
+└──────┬──────────────┬──────────────┬────────────────────┘
+       │              │              │
+       ▼              ▼              ▼
+┌──────────┐  ┌──────────────┐  ┌──────────────┐
+│  Google  │  │   Google     │  │   Google     │
+│  Sheets  │  │  Calendar    │  │    Drive     │
+│  (DB)    │  │  (Events)    │  │ (KTP Files)  │
+└──────────┘  └──────────────┘  └──────────────┘
+```
+
+### Request Lifecycle
+1. Flutter collects Google `idToken` via `google_sign_in`
+2. Every API call sends `POST { action, token, data }` to Apps Script Web App URL
+3. Apps Script verifies token → routes to handler → acquires LockService → reads/writes Sheets
+4. Response `{ success: true, data: {...} }` returned as JSON
+5. Flutter updates local state and UI
+
+### Key Architecture Decisions
+| Concern | Decision |
+|---|---|
+| Auth | Stateless token verification per request — no sessions in Apps Script |
+| OCR | On-device ML Kit — free, offline, no additional API keys |
+| PDF | Client-side Flutter `pdf` package — no server rendering cost |
+| Calendar | Server-side `CalendarApp` in Apps Script — simpler OAuth scope management |
+| File storage | Google Drive via Apps Script `DriveApp` — KTP images stored as Drive files |
+| Locking | `LockService.getScriptLock()` on every write — prevents race conditions |
+
+---
+
+## 3. TECH STACK
+
+### Mobile (Flutter)
+- **Language:** Dart
+- **Target:** Android (API 21+), Flutter 3.x
+- **State Management:** Provider or Riverpod
+- **Navigation:** GoRouter
+
+### Flutter Packages
+| Package | Purpose |
+|---|---|
+| `google_sign_in` | Google OAuth login |
+| `http` | HTTP calls to Apps Script |
+| `shared_preferences` | Local user session storage |
+| `google_mlkit_text_recognition` | On-device OCR for KTP |
+| `image_picker` | Camera / gallery for KTP photo |
+| `pdf` | Client-side PDF generation |
+| `printing` | PDF print / share / save |
+| `table_calendar` | Visual calendar widget |
+| `intl` | Date formatting, localization (id_ID) |
+| `flutter_localizations` | Indonesian locale |
+| `uuid` | UUID generation for IDs |
+| `cached_network_image` | Image caching |
+
+### Backend
+- **Runtime:** Google Apps Script (JavaScript ES6)
+- **Deployment:** Web App — Execute as: Me, Access: Anyone
+- **Entry point:** `doPost(e)` function routing on `e.parameter.action`
+
+### Data & Storage
+- **Database:** Google Sheets (1 Spreadsheet, 5 named sheets)
+- **File storage:** Google Drive (KTP images)
+- **Calendar:** Google Calendar (one shared calendar)
+
+### External Services
+- Google OAuth 2.0 (tokeninfo endpoint for server-side token verification)
+- Google Calendar API (via Apps Script `CalendarApp`)
+- Google Drive API (via Apps Script `DriveApp`)
+
+---
+
+## 4. DATA MODEL
+
+### Sheet 1: `users`
+| Column | Type | Notes |
+|---|---|---|
+| id | STRING (UUID) | Primary key |
+| google_id | STRING | Google sub claim, unique |
+| email | STRING | Unique |
+| name | STRING | Display name |
+| role | ENUM | `admin` / `staff` |
+| created_at | DATETIME | ISO 8601 |
+| updated_at | DATETIME | ISO 8601 |
+
+### Sheet 2: `customers`
+| Column | Type | Notes |
+|---|---|---|
+| id | STRING (UUID) | Primary key |
+| nik | STRING(16) | Unique — from KTP |
+| name | STRING | Full name |
+| phone | STRING | WhatsApp-compatible |
+| address | STRING | From KTP |
+| birth_date | DATE | From KTP |
+| ktp_drive_url | STRING | Google Drive file URL |
+| created_at | DATETIME | |
+| updated_at | DATETIME | |
+
+### Sheet 3: `rooms`
+| Column | Type | Notes |
+|---|---|---|
+| id | STRING (UUID) | Primary key |
+| name | STRING | e.g., "Kamar 1", "Suite A" |
+| price_per_night | NUMBER | In IDR |
+| capacity | NUMBER | Max guests |
+| description | STRING | Optional |
+| status | ENUM | `available` / `unavailable` |
+| created_at | DATETIME | |
+| updated_at | DATETIME | |
+
+### Sheet 4: `transactions`
+| Column | Type | Notes |
+|---|---|---|
+| id | STRING (UUID) | Primary key |
+| booking_code | STRING | Auto-generated: `BK-YYYYMMDD-XXX` |
+| customer_id | STRING → customers.id | FK (enforced in Apps Script) |
+| room_id | STRING → rooms.id | FK |
+| check_in | DATE | |
+| check_out | DATE | |
+| nights | NUMBER | check_out − check_in |
+| total_price | NUMBER | nights × room.price_per_night |
+| dp_amount | NUMBER | Down payment received |
+| payment_status | ENUM | `unpaid` / `partial` / `paid` |
+| calendar_event_id | STRING | Google Calendar event ID |
+| notes | STRING | Optional |
+| created_by | STRING → users.id | FK |
+| created_at | DATETIME | |
+| updated_at | DATETIME | |
+
+### Sheet 5: `payments`
+| Column | Type | Notes |
+|---|---|---|
+| id | STRING (UUID) | Primary key |
+| transaction_id | STRING → transactions.id | FK |
+| amount | NUMBER | IDR |
+| method | ENUM | `cash` / `transfer` / `qris` |
+| paid_at | DATETIME | |
+| notes | STRING | Optional |
+| created_by | STRING → users.id | FK |
+| created_at | DATETIME | |
+
+### Relationships
+```
+users ──────────────────────────────────────────┐
+  │                                             │
+  │ created_by                    created_by   │
+  ▼                                             ▼
+transactions ◄──── customer_id ──── customers  payments
+     │                                            ▲
+     │ room_id                                   │
+     ▼                          transaction_id  │
+   rooms                            ────────────┘
+```
+
+### Business Rules (enforced in Apps Script)
+- NIK must be 16 digits and unique in `customers`
+- Booking code auto-incremented per day: `BK-20260402-001`
+- `payment_status` auto-updated on payment creation:
+  - `sum(payments.amount) == 0` → `unpaid`
+  - `0 < sum < total_price` → `partial`
+  - `sum >= total_price` → `paid`
+- Room cannot be double-booked (check overlap before insert)
+
+---
+
+## 5. CORE FEATURES BREAKDOWN
+
+### Feature 1: Authentication
+- Google Sign-In button on splash screen
+- `google_sign_in` Flutter package provides `idToken`
+- Token POSTed to Apps Script `auth.login` action
+- Apps Script verifies token, upserts user record, returns user object
+- User object cached in `shared_preferences`
+- Auto-logout on token expiry (re-authenticate on next launch)
+- No manual registration screen — account created on first login
+
+### Feature 2: Dashboard
+- **Upcoming bookings widget:** transactions with check_in within next 7 days
+- **Unpaid/partial widget:** transactions filtered by payment_status
+- **Summary cards:** total bookings, total income (filterable)
+- **Date range filter:** daily / weekly / monthly / custom picker
+- **Export button:** triggers CSV generation, share via Android share sheet
+- Data fetched from Apps Script `reports.summary` action on load + pull-to-refresh
+
+### Feature 3: Transaction Management
+**Create Booking Flow:**
+1. Fill room, dates → system calculates nights + total price
+2. Customer lookup by NIK (type NIK or scan KTP)
+3. If NIK not found → open "New Customer" sheet (pre-filled from OCR)
+4. Confirm KTP data (user can edit OCR results)
+5. Submit → Apps Script creates transaction + Google Calendar event
+6. Booking code displayed on success screen
+
+**Edit Booking:**
+- Change dates, room, notes, dp_amount
+- If dates change → Apps Script updates Calendar event
+
+**Delete Booking:**
+- Soft delete (status = `deleted`) or hard delete with Calendar event removal
+- Confirmation dialog required
+
+**Payment Update:**
+- Add payment record (amount, method, date, notes)
+- `payment_status` auto-recalculated server-side
+
+**Document Generation (client-side):**
+- **Invoice:** booking code, customer name, room, dates, total, payment due, property info
+- **Receipt (Kwitansi):** same + "LUNAS" stamp or partial amount received
+- Both generated as PDF, shareable via Android share sheet
+
+### Feature 4: Customer Management
+- List view with search by name or NIK
+- Create: manual form or OCR-assisted (from KTP photo)
+- OCR pipeline: `image_picker` → `google_mlkit_text_recognition` → regex parser → editable form
+- Edit: all fields editable, KTP image replaceable
+- Delete: blocked if customer has active transactions
+- KTP image uploaded to Google Drive, URL stored in `customers.ktp_drive_url`
+
+### Feature 5: Room / Package Management
+- List view showing name, price, status
+- Create/Edit: name, price_per_night, capacity, description, status toggle
+- Delete: blocked if room has future bookings
+- Status toggle (available/unavailable) for quick maintenance mode
+
+### Feature 6: Calendar View
+- `table_calendar` widget, monthly view
+- Each booked date shows room name badge
+- Tap date → list of bookings for that day
+- Tap booking → Transaction Detail screen
+- Color coding: fully paid (green), partial (yellow), unpaid (red)
+- Data: all transactions loaded once, filtered client-side
+
+### Feature 7: Settings
+- Logged-in user profile (name, email, avatar)
+- Apps Script Web App URL configuration (entered once, stored in shared_preferences)
+- Google Calendar ID configuration
+- About / version info
+- Logout button (clears local session)
+
+---
+
+## 6. SYSTEM FLOWS
+
+### Flow 1: Login
+```
+User opens app
+  → Splash screen checks shared_preferences for cached user
+  → [Cached] → Go to Dashboard
+  → [Not cached] → Show Google Sign-In button
+      → Tap Sign In → google_sign_in.signIn()
+      → Get idToken
+      → POST { action: "auth.login", token: idToken }
+      → Apps Script: verify token via tokeninfo endpoint
+      → [Invalid] → Return 401 → Show error
+      → [Valid] → Upsert user in users sheet → Return user object
+      → Flutter: save user to shared_preferences → Go to Dashboard
+```
+
+### Flow 2: Booking Creation (with OCR + Calendar)
+```
+Tap "New Booking"
+  → Select room from dropdown
+  → Pick check-in / check-out dates
+  → System shows: nights count + total price
+  → Customer section:
+      → [Search by NIK] → GET customers.getByNIK
+          → [Found] → Pre-fill customer fields (read-only)
+          → [Not found] → Enable "Scan KTP" or "Add Manually"
+              → Scan KTP:
+                  → image_picker (camera)
+                  → ML Kit text recognition → raw text
+                  → Regex parser extracts: NIK, name, address, birth_date
+                  → Show editable form pre-filled with OCR results
+                  → User confirms/corrects fields
+  → Input phone number
+  → Input down payment (optional)
+  → Tap "Save Booking"
+      → Apps Script:
+          → Acquire LockService
+          → Check room availability (no overlapping active transactions)
+          → [Conflict] → Return 409 → Show "Room not available" error
+          → [Available]:
+              → If new customer: create customer record, upload KTP to Drive
+              → Generate booking_code
+              → Create transaction record
+              → Create Google Calendar event via CalendarApp
+              → Store calendar_event_id in transaction
+              → Release lock
+              → Return transaction object
+      → Flutter: show success screen with booking_code
+      → Option: generate and share Invoice PDF
+```
+
+### Flow 3: Payment Update
+```
+Open Transaction Detail
+  → Tap "Add Payment"
+  → Input: amount, method, date, notes
+  → POST { action: "payments.create", data: { transaction_id, amount, ... } }
+      → Apps Script:
+          → Acquire LockService
+          → Insert payment record
+          → Recalculate sum of all payments for transaction
+          → Update transactions.payment_status accordingly
+          → Release lock
+          → Return updated transaction
+  → Flutter: refresh transaction detail
+  → Option: generate Receipt (Kwitansi) PDF if fully paid
+```
+
+### Flow 4: Reporting
+```
+Dashboard loads
+  → POST { action: "reports.summary", data: { from, to } }
+      → Apps Script:
+          → Filter transactions by date range
+          → Aggregate: count bookings, sum total_price, sum payments
+          → Group by day/week/month based on range
+          → Return structured summary object
+  → Flutter: render charts and summary cards
+
+Export CSV:
+  → Tap "Export"
+  → POST { action: "reports.export", data: { from, to, format: "csv" } }
+      → Apps Script:
+          → Fetch filtered transactions + customer + room joins
+          → Build CSV string
+          → Return as base64 encoded string
+  → Flutter: decode → save to Downloads → share via Android share sheet
+```
+
+---
+
+## 7. API DESIGN
+
+All requests: `POST <APPS_SCRIPT_WEB_APP_URL>`
+All bodies: `{ "action": "<action>", "token": "<google_id_token>", "data": { ... } }`
+All responses: `{ "success": true|false, "data": { ... }, "error": "message", "timestamp": "ISO8601" }`
+
+### Auth
+| Action | Input | Output |
+|---|---|---|
+| `auth.login` | token | user object |
+
+### Customers
+| Action | Input | Output |
+|---|---|---|
+| `customers.list` | — | array of customers |
+| `customers.getByNIK` | `{ nik }` | customer or null |
+| `customers.create` | customer fields + ktp_base64 | created customer |
+| `customers.update` | `{ id, ...fields }` | updated customer |
+| `customers.delete` | `{ id }` | success |
+
+### Rooms
+| Action | Input | Output |
+|---|---|---|
+| `rooms.list` | — | array of rooms |
+| `rooms.create` | room fields | created room |
+| `rooms.update` | `{ id, ...fields }` | updated room |
+| `rooms.delete` | `{ id }` | success |
+
+### Transactions
+| Action | Input | Output |
+|---|---|---|
+| `transactions.list` | `{ from?, to?, status? }` | array of transactions |
+| `transactions.getById` | `{ id }` | transaction + customer + room |
+| `transactions.create` | all transaction fields | created transaction |
+| `transactions.update` | `{ id, ...fields }` | updated transaction |
+| `transactions.delete` | `{ id }` | success |
+| `transactions.checkAvailability` | `{ room_id, check_in, check_out, exclude_id? }` | `{ available: bool }` |
+
+### Payments
+| Action | Input | Output |
+|---|---|---|
+| `payments.create` | `{ transaction_id, amount, method, paid_at, notes }` | payment + updated transaction status |
+| `payments.listByTransaction` | `{ transaction_id }` | array of payments |
+| `payments.delete` | `{ id }` | success + recalculated transaction status |
+
+### Reports
+| Action | Input | Output |
+|---|---|---|
+| `reports.summary` | `{ from, to }` | `{ total_bookings, total_income, paid_count, partial_count, unpaid_count, series[] }` |
+| `reports.export` | `{ from, to }` | `{ csv_base64: string, filename: string }` |
+
+---
+
+## 8. RISKS & LIMITATIONS
+
+### Technical Risks
+| Risk | Severity | Mitigation |
+|---|---|---|
+| Google Sheets rate limit (100 req/100s/user) | Medium | Client-side caching, batch reads, avoid polling |
+| Apps Script cold start (~2–5s first request) | Low | Show loading indicator; warm-up request on login |
+| LockService timeout (10s) → 423 response | Medium | Retry logic in Flutter (max 3 retries with backoff) |
+| Apps Script 6-min execution timeout | Low | Keep handlers thin; never process large datasets in one call |
+| Google Sheets row limit (~50k practical) | Low | Archive old transactions yearly; acceptable for target business size |
+| No real-time sync | Medium | Pull-to-refresh pattern; cache invalidation on mutations |
+| KTP OCR accuracy varies by image quality | High | Always show editable confirmation screen; never auto-save OCR result |
+| Calendar event out-of-sync on edit failure | Medium | Store calendar_event_id; retry calendar update independently |
+
+### Business / UX Risks
+| Risk | Mitigation |
+|---|---|
+| Double booking between simultaneous requests | LockService + overlap check before insert |
+| Staff accidentally deleting bookings | Confirmation dialog; soft-delete option |
+| Lost Apps Script URL | Store in Settings screen; document in onboarding |
+| Offline usage | Not supported — show clear "No internet" error state |
+
+---
+
+## 9. FUTURE IMPROVEMENTS
+
+### Short-term (after v1.0)
+- Push notifications for upcoming check-ins (Firebase Cloud Messaging)
+- WhatsApp message template for booking confirmation (`wa.me` deep link)
+- Offline read-only mode (local SQLite cache)
+- Multi-language support (English + Bahasa Indonesia)
+- Barcode/QR scanner for NIK lookup
+
+### Medium-term
+- Multi-property support (multiple Sheets, property selector)
+- Staff role permissions (staff cannot delete, cannot see full reports)
+- Photo gallery per room
+- Recurring booking support (weekly/monthly)
+- Custom invoice template (property logo, colors)
+
+### Long-term / Migration Path
+- Migrate to Firebase Firestore when >30 rooms or >100 bookings/month
+- Web dashboard companion (Flutter Web or Next.js)
+- Payment gateway integration (Midtrans/Xendit for online payments)
+- Channel manager sync (Booking.com, Traveloka)
+
+---
+
+## 10. DEVELOPMENT ROADMAP
+
+### Phase 1: Infrastructure Foundation
+**Goal:** App shell, auth working, data flowing end-to-end
+
+- [ ] Create Google Sheets spreadsheet with all 5 sheets + headers
+- [ ] Create Apps Script project, deploy as Web App
+- [ ] Implement Apps Script: `auth.login`, `rooms.list` (smoke test)
+- [ ] Flutter project init with folder structure
+- [ ] Google Sign-In integration → verified token → user stored locally
+- [ ] HTTP service layer (base POST function with token injection)
+- [ ] Settings screen (Web App URL input)
+
+**Exit criteria:** Can log in with Google and see a list of rooms from Sheets.
+
+---
+
+### Phase 2: Room & Customer CRUD + OCR
+**Goal:** Full management of rooms and customers, with KTP scanning
+
+- [ ] Apps Script: full rooms CRUD + customers CRUD + customers.getByNIK
+- [ ] Room list, create, edit, delete screens
+- [ ] Customer list, create, edit, delete screens
+- [ ] KTP image capture (camera + gallery)
+- [ ] ML Kit OCR integration + regex KTP parser
+- [ ] OCR confirmation/edit form
+- [ ] KTP image upload to Google Drive via Apps Script
+
+**Exit criteria:** Can add a room and scan a KTP to create a customer.
+
+---
+
+### Phase 3: Bookings + Calendar + Payments
+**Goal:** Core business workflow fully functional
+
+- [ ] Apps Script: transactions CRUD + availability check + payments CRUD
+- [ ] Apps Script: Google Calendar event create/update/delete
+- [ ] Booking creation flow (full: room → customer → OCR → save → calendar)
+- [ ] Transaction list + detail screen
+- [ ] Edit and delete booking
+- [ ] Add payment screen + payment_status recalculation
+- [ ] Calendar view screen (table_calendar + transaction overlay)
+
+**Exit criteria:** Full booking lifecycle works end-to-end including calendar sync.
+
+---
+
+### Phase 4: Dashboard + Reports + PDF
+**Goal:** Business intelligence and document generation
+
+- [ ] Apps Script: reports.summary + reports.export
+- [ ] Dashboard screen (upcoming bookings, unpaid, summary cards)
+- [ ] Date range filter + daily/weekly/monthly toggle
+- [ ] CSV export + Android share sheet
+- [ ] PDF Invoice template (Flutter pdf package)
+- [ ] PDF Receipt/Kwitansi template
+- [ ] Share/print/save PDF via printing package
+
+**Exit criteria:** Owner can view today's report and share a receipt PDF.
+
+---
+
+### Phase 5: Polish & Hardening
+**Goal:** Production-ready stability and UX
+
+- [ ] Loading states and skeleton screens on all data screens
+- [ ] Proper error messages (network error, lock timeout, validation)
+- [ ] Retry logic for 423 (lock) responses
+- [ ] Input validation (NIK format, date logic, amount > 0)
+- [ ] Confirmation dialogs on destructive actions
+- [ ] Empty states for all list screens
+- [ ] App icon, splash screen, theming
+- [ ] Basic onboarding flow (first-time setup: enter Web App URL)
+- [ ] Manual QA on real Android devices
+
+**Exit criteria:** App is stable, handles errors gracefully, ready for owner use.
+
+---
+
+*End of project.me*
