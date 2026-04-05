@@ -106,9 +106,10 @@ class _PdfActionSheetState extends ConsumerState<PdfActionSheet> {
     final customer = ref.read(customersProvider).valueOrNull
         ?.where((c) => c.id == t.customerId)
         .firstOrNull;
-    final room = ref.read(roomsProvider).valueOrNull
-        ?.where((r) => r.id == t.roomId)
-        .firstOrNull;
+    final rooms = ref.read(roomsProvider).valueOrNull
+            ?.where((r) => t.roomIds.contains(r.id))
+            .toList() ??
+        [];
     final payments =
         ref.read(paymentsProvider(t.id)).valueOrNull ?? [];
 
@@ -116,13 +117,13 @@ class _PdfActionSheetState extends ConsumerState<PdfActionSheet> {
       _DocType.invoice => PdfService.generateInvoice(
           transaction: t,
           customer: customer,
-          room: room,
+          rooms: rooms,
           payments: payments,
         ),
       _DocType.receipt => PdfService.generateReceipt(
           transaction: t,
           customer: customer,
-          room: room,
+          rooms: rooms,
           payments: payments,
         ),
     };

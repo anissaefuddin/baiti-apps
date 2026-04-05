@@ -11,17 +11,7 @@ import '../../../rooms/presentation/providers/rooms_provider.dart';
 import '../providers/transactions_provider.dart';
 import '../widgets/customer_picker.dart';
 
-/// Booking creation form.
-///
-/// Flow:
-///   1. Pick check-in / check-out dates → nights & total auto-computed.
-///   2. Select customer from loaded list.
-///   3. Select room from loaded list.
-///   4. When all three are set, availability is checked automatically.
-///   5. User reviews summary and submits.
-///
-/// The server re-validates availability under a lock on submit — the client-side
-/// check is for UX only and should not be relied upon for correctness.
+/// Booking creation form. Supports selecting multiple rooms for the same date range.
 class BookingFormScreen extends ConsumerStatefulWidget {
   const BookingFormScreen({super.key});
 
@@ -33,21 +23,19 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
   DateTime? _checkIn;
   DateTime? _checkOut;
   CustomerModel? _customer;
-  RoomModel? _room;
+  List<RoomModel> _rooms = [];
+
   final _notesCtrl = TextEditingController();
 
-  bool _isSubmitting = false;
+  bool _isSubmitting    = false;
   String? _submitError;
-
-  // Availability check state
   bool _isCheckingAvail = false;
-  bool? _isAvailable; // null = not yet checked
-  String? _conflictCode;
+  bool? _isAvailable;
+  String?       _conflictCode;
+  List<String>? _conflictRoomNames;
+  DateTime?     _conflictCheckIn;
+  DateTime?     _conflictCheckOut;
 
-  static final _dateFmt = DateFormat('d MMM yyyy', 'id_ID');
-  static final _idrFmt  = NumberFormat.currency(
-    locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0,
-  );
 
   @override
   void dispose() {
@@ -55,44 +43,49 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
     super.dispose();
   }
 
-  // ── Computed helpers ────────────────────────────────────────────────────
+  // ── Computed ────────────────────────────────────────────────────────────
 
   int get _nights {
     if (_checkIn == null || _checkOut == null) return 0;
     return _checkOut!.difference(_checkIn!).inDays;
   }
 
-  double get _totalPrice {
-    if (_room == null) return 0;
-    return _nights * _room!.pricePerNight;
-  }
+  double get _totalPrice =>
+      _rooms.fold(0.0, (sum, r) => sum + r.pricePerNight) * _nights;
 
   bool get _canCheckAvail =>
-      _room != null && _checkIn != null && _checkOut != null;
+      _rooms.isNotEmpty && _checkIn != null && _checkOut != null;
 
   bool get _canSubmit =>
       _canCheckAvail && _customer != null && _isAvailable == true;
 
-  // ── Availability check ──────────────────────────────────────────────────
+  // ── Availability ────────────────────────────────────────────────────────
 
   Future<void> _checkAvailability() async {
     if (!_canCheckAvail) return;
     setState(() {
-      _isCheckingAvail = true;
-      _isAvailable = null;
-      _conflictCode = null;
+      _isCheckingAvail    = true;
+      _isAvailable        = null;
+      _conflictCode       = null;
+      _conflictRoomNames  = null;
+      _conflictCheckIn    = null;
+      _conflictCheckOut   = null;
     });
-
     try {
-      final result = await ref.read(transactionsProvider.notifier).checkAvailability(
-            roomId:   _room!.id,
+      final result = await ref
+          .read(transactionsProvider.notifier)
+          .checkAvailability(
+            roomIds:  _rooms.map((r) => r.id).toList(),
             checkIn:  _checkIn!,
             checkOut: _checkOut!,
           );
       if (mounted) {
         setState(() {
-          _isAvailable  = result.available;
-          _conflictCode = result.conflictCode;
+          _isAvailable        = result.available;
+          _conflictCode       = result.conflictCode;
+          _conflictRoomNames  = result.conflictRoomNames;
+          _conflictCheckIn    = result.conflictCheckIn;
+          _conflictCheckOut   = result.conflictCheckOut;
         });
       }
     } on ApiException catch (e) {
@@ -107,7 +100,7 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
   // ── Date pickers ────────────────────────────────────────────────────────
 
   Future<void> _pickCheckIn() async {
-    final now = DateTime.now();
+    final now    = DateTime.now();
     final picked = await showDatePicker(
       context: context,
       initialDate: _checkIn ?? now,
@@ -115,10 +108,8 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
       lastDate: now.add(const Duration(days: 730)),
     );
     if (picked == null || !mounted) return;
-
     setState(() {
-      _checkIn = picked;
-      // If check-out is before or equal to new check-in, reset it.
+      _checkIn     = picked;
       if (_checkOut != null && !_checkOut!.isAfter(picked)) {
         _checkOut = picked.add(const Duration(days: 1));
       }
@@ -128,19 +119,15 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
   }
 
   Future<void> _pickCheckOut() async {
-    if (_checkIn == null) {
-      await _pickCheckIn();
-      return;
-    }
+    if (_checkIn == null) { await _pickCheckIn(); return; }
     final minDate = _checkIn!.add(const Duration(days: 1));
-    final picked = await showDatePicker(
+    final picked  = await showDatePicker(
       context: context,
       initialDate: _checkOut ?? minDate,
       firstDate: minDate,
       lastDate: _checkIn!.add(const Duration(days: 365)),
     );
     if (picked == null || !mounted) return;
-
     setState(() {
       _checkOut    = picked;
       _isAvailable = null;
@@ -148,9 +135,32 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
     _checkAvailability();
   }
 
-  void _onRoomChanged(RoomModel? room) {
+  // ── Room picker ─────────────────────────────────────────────────────────
+
+  Future<void> _openRoomPicker(List<RoomModel> allRooms) async {
+    // Issue 4: require dates before picking rooms
+    if (_checkIn == null || _checkOut == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pilih tanggal check-in & check-out terlebih dahulu')),
+      );
+      return;
+    }
+
+    final selected = await Navigator.of(context, rootNavigator: true)
+        .push<List<RoomModel>>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => _RoomPickerScreen(
+          allRooms: allRooms,
+          selected: List.of(_rooms),
+          checkIn: _checkIn!,
+          checkOut: _checkOut!,
+        ),
+      ),
+    );
+    if (selected == null || !mounted) return;
     setState(() {
-      _room        = room;
+      _rooms       = selected;
       _isAvailable = null;
     });
     _checkAvailability();
@@ -160,33 +170,40 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
 
   Future<void> _submit() async {
     if (!_canSubmit) return;
-    setState(() {
-      _isSubmitting = true;
-      _submitError  = null;
-    });
-
+    setState(() { _isSubmitting = true; _submitError = null; });
     try {
-      await ref.read(transactionsProvider.notifier).create(
+      final txn = await ref.read(transactionsProvider.notifier).create(
             customerId: _customer!.id,
-            roomId:     _room!.id,
+            roomIds:    _rooms.map((r) => r.id).toList(),
             checkIn:    _checkIn!,
             checkOut:   _checkOut!,
             notes:      _notesCtrl.text.trim(),
           );
-
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Pemesanan berhasil dibuat'),
-            backgroundColor: Color(0xFF2E7D32),
-          ),
-        );
+        if (txn.calendarError != null) {
+          // Booking saved but calendar event failed — show warning then navigate.
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Pemesanan dibuat, tapi event kalender gagal: ${txn.calendarError}',
+              ),
+              backgroundColor: Colors.orange.shade700,
+              duration: const Duration(seconds: 6),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Pemesanan berhasil dibuat'),
+              backgroundColor: Color(0xFF2E7D32),
+            ),
+          );
+        }
         context.go(AppRoutes.transactions);
       }
     } on ApiException catch (e) {
       setState(() {
         _submitError = e.message;
-        // If server rejects due to conflict, invalidate our cached check result.
         if (e.isConflict) _isAvailable = false;
       });
     } catch (e) {
@@ -208,15 +225,14 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
         title: const Text('Buat Pemesanan'),
         leading: IconButton(
           icon: const Icon(Icons.close),
-          onPressed:
-              _isSubmitting ? null : () => context.go(AppRoutes.transactions),
+          onPressed: _isSubmitting ? null : () => context.go(AppRoutes.transactions),
         ),
       ),
       body: Form(
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
-            // ── Error banner ────────────────────────────────────────────
+
             if (_submitError != null) ...[
               _ErrorBanner(
                 message: _submitError!,
@@ -225,12 +241,12 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
               const SizedBox(height: 20),
             ],
 
-            // ── Dates ───────────────────────────────────────────────────
-            Text('Tanggal Menginap',
-                style: Theme.of(context)
-                    .textTheme
-                    .labelLarge
-                    ?.copyWith(color: scheme.onSurfaceVariant)),
+            // ── Dates ────────────────────────────────────────────────
+            Text(
+              'Tanggal Menginap',
+              style: Theme.of(context).textTheme.labelLarge
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
             const SizedBox(height: 8),
             Row(
               children: [
@@ -243,8 +259,7 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                 ),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Icon(Icons.arrow_forward,
-                      size: 18, color: scheme.onSurfaceVariant),
+                  child: Icon(Icons.arrow_forward, size: 18, color: scheme.onSurfaceVariant),
                 ),
                 Expanded(
                   child: _DateTile(
@@ -267,12 +282,12 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
             ],
             const SizedBox(height: 24),
 
-            // ── Customer ─────────────────────────────────────────────────
-            Text('Tamu',
-                style: Theme.of(context)
-                    .textTheme
-                    .labelLarge
-                    ?.copyWith(color: scheme.onSurfaceVariant)),
+            // ── Customer ─────────────────────────────────────────────
+            Text(
+              'Tamu',
+              style: Theme.of(context).textTheme.labelLarge
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
             const SizedBox(height: 8),
             CustomerPicker(
               value: _customer,
@@ -281,60 +296,51 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
             ),
             const SizedBox(height: 24),
 
-            // ── Room ─────────────────────────────────────────────────────
-            Text('Kamar',
-                style: Theme.of(context)
-                    .textTheme
-                    .labelLarge
-                    ?.copyWith(color: scheme.onSurfaceVariant)),
+            // ── Rooms ─────────────────────────────────────────────────
+            Text(
+              'Kamar',
+              style: Theme.of(context).textTheme.labelLarge
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
             const SizedBox(height: 8),
             roomsAsync.when(
               loading: () => const _DropdownShimmer(),
-              error: (e, _) => Text('Gagal memuat kamar: $e',
-                  style: TextStyle(color: scheme.error)),
-              data: (rooms) => DropdownButtonFormField<RoomModel>(
-                value: _room,
-                hint: const Text('Pilih kamar'),
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  prefixIcon: Icon(Icons.meeting_room_outlined),
-                ),
-                items: rooms
-                    .map((r) => DropdownMenuItem(
-                          value: r,
-                          child: Text(
-                            '${r.name}  ·  ${r.formattedPrice}/malam',
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ))
-                    .toList(),
-                onChanged: _isSubmitting ? null : _onRoomChanged,
-                validator: (_) =>
-                    _room == null ? 'Pilih kamar terlebih dahulu' : null,
+              error: (e, _) => Text(
+                'Gagal memuat kamar: $e',
+                style: TextStyle(color: scheme.error),
+              ),
+              data: (allRooms) => _RoomSelector(
+                rooms: _rooms,
+                enabled: !_isSubmitting,
+                onTap: () => _openRoomPicker(allRooms),
               ),
             ),
             const SizedBox(height: 16),
 
-            // ── Availability indicator ────────────────────────────────────
-            if (_canCheckAvail) _AvailabilityTile(
-              isChecking: _isCheckingAvail,
-              isAvailable: _isAvailable,
-              conflictCode: _conflictCode,
-              onRecheck: _checkAvailability,
-            ),
+            // ── Availability ──────────────────────────────────────────
+            if (_canCheckAvail)
+              _AvailabilityTile(
+                isChecking:         _isCheckingAvail,
+                isAvailable:        _isAvailable,
+                conflictCode:       _conflictCode,
+                conflictRoomNames:  _conflictRoomNames,
+                conflictCheckIn:    _conflictCheckIn,
+                conflictCheckOut:   _conflictCheckOut,
+                onRecheck:          _checkAvailability,
+              ),
 
-            // ── Summary ───────────────────────────────────────────────────
-            if (_room != null && _nights > 0) ...[
+            // ── Summary ───────────────────────────────────────────────
+            if (_rooms.isNotEmpty && _nights > 0) ...[
               const SizedBox(height: 16),
               _SummaryCard(
                 nights:     _nights,
-                room:       _room!,
+                rooms:      _rooms,
                 totalPrice: _totalPrice,
               ),
             ],
             const SizedBox(height: 24),
 
-            // ── Notes ─────────────────────────────────────────────────────
+            // ── Notes ─────────────────────────────────────────────────
             TextFormField(
               controller: _notesCtrl,
               decoration: const InputDecoration(
@@ -349,7 +355,7 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
             ),
             const SizedBox(height: 32),
 
-            // ── Submit ────────────────────────────────────────────────────
+            // ── Submit ────────────────────────────────────────────────
             FilledButton(
               onPressed: (_isSubmitting || !_canSubmit) ? null : _submit,
               child: _isSubmitting
@@ -360,13 +366,17 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                     )
                   : const Text('Buat Pemesanan'),
             ),
-            if (!_canSubmit && _customer != null && _room != null &&
-                _checkIn != null && _checkOut != null && _isAvailable != true)
+            if (!_canSubmit &&
+                _customer != null &&
+                _rooms.isNotEmpty &&
+                _checkIn != null &&
+                _checkOut != null &&
+                _isAvailable != true)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(
                   _isAvailable == false
-                      ? 'Kamar tidak tersedia untuk tanggal ini.'
+                      ? 'Salah satu kamar tidak tersedia untuk tanggal ini.'
                       : _isCheckingAvail
                           ? 'Memeriksa ketersediaan...'
                           : 'Periksa ketersediaan kamar sebelum memesan.',
@@ -374,8 +384,8 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                   style: TextStyle(
                     fontSize: 12,
                     color: _isAvailable == false
-                        ? Theme.of(context).colorScheme.error
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
+                        ? scheme.error
+                        : scheme.onSurfaceVariant,
                   ),
                 ),
               ),
@@ -386,22 +396,233 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
   }
 }
 
+// ── Room selector ─────────────────────────────────────────────────────────────
+
+class _RoomSelector extends StatelessWidget {
+  const _RoomSelector({
+    required this.rooms,
+    required this.enabled,
+    required this.onTap,
+  });
+  final List<RoomModel> rooms;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: rooms.isEmpty
+                ? scheme.outline.withValues(alpha: 0.5)
+                : scheme.primary,
+          ),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: rooms.isEmpty
+            ? Row(
+                children: [
+                  Icon(Icons.meeting_room_outlined, color: scheme.onSurfaceVariant),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Pilih kamar (bisa lebih dari satu)',
+                    style: TextStyle(color: scheme.onSurfaceVariant),
+                  ),
+                  const Spacer(),
+                  Icon(Icons.arrow_drop_down, color: scheme.onSurfaceVariant),
+                ],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.meeting_room_outlined, color: scheme.primary, size: 18),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${rooms.length} kamar dipilih',
+                        style: TextStyle(
+                          color: scheme.primary,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const Spacer(),
+                      Icon(Icons.edit_outlined, color: scheme.primary, size: 16),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: rooms
+                        .map(
+                          (r) => Chip(
+                            label: Text(r.name, style: const TextStyle(fontSize: 12)),
+                            padding: EdgeInsets.zero,
+                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+// ── Room picker screen ────────────────────────────────────────────────────────
+
+class _RoomPickerScreen extends StatefulWidget {
+  const _RoomPickerScreen({
+    required this.allRooms,
+    required this.selected,
+    required this.checkIn,
+    required this.checkOut,
+  });
+  final List<RoomModel> allRooms;
+  final List<RoomModel> selected;
+  final DateTime checkIn;
+  final DateTime checkOut;
+
+  @override
+  State<_RoomPickerScreen> createState() => _RoomPickerScreenState();
+}
+
+class _RoomPickerScreenState extends State<_RoomPickerScreen> {
+  late List<RoomModel> _selected;
+  static final _idr  = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0);
+  static final _dfmt = DateFormat('d MMM yyyy', 'id_ID');
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = List.of(widget.selected);
+  }
+
+  void _confirm() =>
+      Navigator.of(context, rootNavigator: true).pop(_selected);
+
+  void _cancel() =>
+      Navigator.of(context, rootNavigator: true).pop();
+
+  void _toggle(RoomModel room) {
+    setState(() {
+      if (_selected.any((r) => r.id == room.id)) {
+        _selected.removeWhere((r) => r.id == room.id);
+      } else {
+        _selected.add(room);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final nights = widget.checkOut.difference(widget.checkIn).inDays;
+
+    return Scaffold(
+      appBar: AppBar(
+        // Explicit back button using rootNavigator so GoRouter doesn't intercept
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: _cancel,
+        ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Pilih Kamar', style: TextStyle(fontSize: 16)),
+            Text(
+              '${_dfmt.format(widget.checkIn)} – ${_dfmt.format(widget.checkOut)} · $nights malam',
+              style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+      // Always-visible confirm button at the bottom
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: FilledButton(
+            onPressed: _selected.isEmpty ? null : _confirm,
+            child: Text(
+              _selected.isEmpty
+                  ? 'Pilih kamar'
+                  : 'Konfirmasi ${_selected.length} kamar',
+            ),
+          ),
+        ),
+      ),
+      body: Column(
+        children: [
+          // Date summary banner
+          Container(
+            width: double.infinity,
+            color: scheme.primaryContainer,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Text(
+              'Menampilkan kamar untuk ${_dfmt.format(widget.checkIn)} – ${_dfmt.format(widget.checkOut)}',
+              style: TextStyle(
+                fontSize: 13,
+                color: scheme.onPrimaryContainer,
+              ),
+            ),
+          ),
+          Expanded(
+            child: ListView.separated(
+              itemCount: widget.allRooms.length,
+              separatorBuilder: (_, __) =>
+                  Divider(height: 1, color: scheme.outlineVariant),
+              itemBuilder: (_, i) {
+                final room       = widget.allRooms[i];
+                final isSelected = _selected.any((r) => r.id == room.id);
+                return CheckboxListTile(
+                  value: isSelected,
+                  onChanged: (_) => _toggle(room),
+                  title: Text(room.name,
+                      style: const TextStyle(fontWeight: FontWeight.w500)),
+                  subtitle: Text(
+                    '${_idr.format(room.pricePerNight)}/malam · ${room.capacity} tamu',
+                    style: TextStyle(
+                        fontSize: 12, color: scheme.onSurfaceVariant),
+                  ),
+                  secondary: isSelected
+                      ? Icon(Icons.check_circle,
+                          color: scheme.primary, size: 22)
+                      : Icon(Icons.radio_button_unchecked,
+                          color: scheme.outlineVariant, size: 22),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ── Date tile ─────────────────────────────────────────────────────────────────
 
 class _DateTile extends StatelessWidget {
   const _DateTile({required this.label, required this.date, this.onTap});
-
   final String label;
   final DateTime? date;
   final VoidCallback? onTap;
-
   static final _fmt = DateFormat('d MMM yyyy', 'id_ID');
 
   @override
   Widget build(BuildContext context) {
     final scheme  = Theme.of(context).colorScheme;
     final isEmpty = date == null;
-
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(10),
@@ -430,9 +651,7 @@ class _DateTile extends StatelessWidget {
               date != null ? _fmt.format(date!) : '—',
               style: TextStyle(
                 fontWeight: FontWeight.w600,
-                color: isEmpty
-                    ? scheme.onSurfaceVariant
-                    : scheme.onSurface,
+                color: isEmpty ? scheme.onSurfaceVariant : scheme.onSurface,
               ),
             ),
           ],
@@ -450,17 +669,23 @@ class _AvailabilityTile extends StatelessWidget {
     required this.isAvailable,
     required this.conflictCode,
     required this.onRecheck,
+    this.conflictRoomNames,
+    this.conflictCheckIn,
+    this.conflictCheckOut,
   });
-
   final bool isChecking;
   final bool? isAvailable;
   final String? conflictCode;
+  final List<String>? conflictRoomNames;
+  final DateTime? conflictCheckIn;
+  final DateTime? conflictCheckOut;
   final VoidCallback onRecheck;
+
+  static final _fmt = DateFormat('d MMM yyyy', 'id_ID');
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-
     if (isChecking) {
       return Row(
         children: [
@@ -469,12 +694,13 @@ class _AvailabilityTile extends StatelessWidget {
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
           const SizedBox(width: 10),
-          Text('Memeriksa ketersediaan...',
-              style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
+          Text(
+            'Memeriksa ketersediaan...',
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
+          ),
         ],
       );
     }
-
     if (isAvailable == null) {
       return TextButton.icon(
         onPressed: onRecheck,
@@ -487,14 +713,12 @@ class _AvailabilityTile extends StatelessWidget {
         ),
       );
     }
-
     if (isAvailable!) {
       return Row(
         children: [
-          const Icon(Icons.check_circle_outline,
-              size: 18, color: Color(0xFF2E7D32)),
+          const Icon(Icons.check_circle_outline, size: 18, color: Color(0xFF2E7D32)),
           const SizedBox(width: 8),
-          const Text('Kamar tersedia',
+          const Text('Semua kamar tersedia',
               style: TextStyle(color: Color(0xFF2E7D32), fontSize: 13)),
           const Spacer(),
           TextButton(
@@ -510,7 +734,14 @@ class _AvailabilityTile extends StatelessWidget {
       );
     }
 
-    // Not available
+    // Build rich conflict message
+    final roomLine = (conflictRoomNames != null && conflictRoomNames!.isNotEmpty)
+        ? conflictRoomNames!.join(', ')
+        : null;
+    final dateLine = (conflictCheckIn != null && conflictCheckOut != null)
+        ? '${_fmt.format(conflictCheckIn!)} – ${_fmt.format(conflictCheckOut!)}'
+        : null;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
@@ -518,15 +749,51 @@ class _AvailabilityTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.block_outlined, size: 18, color: scheme.onErrorContainer),
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Icon(Icons.block_outlined, size: 18, color: scheme.onErrorContainer),
+          ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              conflictCode != null
-                  ? 'Kamar sudah dipesan (${conflictCode!})'
-                  : 'Kamar tidak tersedia untuk tanggal ini',
-              style: TextStyle(color: scheme.onErrorContainer, fontSize: 13),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Kamar sudah dipesan',
+                  style: TextStyle(
+                    color: scheme.onErrorContainer,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (roomLine != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    roomLine,
+                    style: TextStyle(color: scheme.onErrorContainer, fontSize: 12),
+                  ),
+                ],
+                if (dateLine != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    dateLine,
+                    style: TextStyle(color: scheme.onErrorContainer, fontSize: 12),
+                  ),
+                ],
+                if (conflictCode != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'Booking: $conflictCode',
+                    style: TextStyle(
+                      color: scheme.onErrorContainer.withValues(alpha: 0.7),
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
           TextButton(
@@ -550,14 +817,12 @@ class _AvailabilityTile extends StatelessWidget {
 class _SummaryCard extends StatelessWidget {
   const _SummaryCard({
     required this.nights,
-    required this.room,
+    required this.rooms,
     required this.totalPrice,
   });
-
   final int nights;
-  final RoomModel room;
+  final List<RoomModel> rooms;
   final double totalPrice;
-
   static final _idr = NumberFormat.currency(
     locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0,
   );
@@ -573,12 +838,34 @@ class _SummaryCard extends StatelessWidget {
       ),
       child: Column(
         children: [
+          ...rooms.map(
+            (r) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                children: [
+                  Text(
+                    r.name,
+                    style: TextStyle(color: scheme.onPrimaryContainer, fontSize: 13),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${_idr.format(r.pricePerNight)}/malam',
+                    style: TextStyle(
+                      color: scheme.onPrimaryContainer.withValues(alpha: 0.8),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (rooms.length > 1)
+            Divider(color: scheme.onPrimaryContainer.withValues(alpha: 0.3)),
           Row(
             children: [
               Text(
-                '$nights malam × ${room.formattedPrice}',
-                style: TextStyle(
-                    color: scheme.onPrimaryContainer, fontSize: 13),
+                '$nights malam${rooms.length > 1 ? ' × ${rooms.length} kamar' : ''}',
+                style: TextStyle(color: scheme.onPrimaryContainer, fontSize: 13),
               ),
               const Spacer(),
               Text(
@@ -618,14 +905,18 @@ class _ErrorBanner extends StatelessWidget {
           Icon(Icons.error_outline, color: scheme.onErrorContainer, size: 18),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(message,
-                style: TextStyle(color: scheme.onErrorContainer)),
+            child: Text(
+              message,
+              style: TextStyle(color: scheme.onErrorContainer),
+            ),
           ),
           GestureDetector(
             onTap: onDismiss,
-            child: Icon(Icons.close,
-                color: scheme.onErrorContainer.withValues(alpha: 0.7),
-                size: 16),
+            child: Icon(
+              Icons.close,
+              color: scheme.onErrorContainer.withValues(alpha: 0.7),
+              size: 16,
+            ),
           ),
         ],
       ),
@@ -642,10 +933,8 @@ class _DropdownShimmer extends StatelessWidget {
       height: 56,
       decoration: BoxDecoration(
         border: Border.all(
-            color: Theme.of(context)
-                .colorScheme
-                .outline
-                .withValues(alpha: 0.5)),
+          color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
+        ),
         borderRadius: BorderRadius.circular(12),
         color: Theme.of(context).colorScheme.surfaceContainerLowest,
       ),

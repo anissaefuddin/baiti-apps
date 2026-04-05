@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../../core/router/app_router.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../../settings/presentation/screens/setup_screen.dart';
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -94,6 +95,16 @@ class DashboardScreen extends ConsumerWidget {
               ),
             ],
           ),
+          const SizedBox(height: 32),
+          Center(
+            child: Text(
+              'v${AppInfo.version} (${AppInfo.buildCode})',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurface.withOpacity(0.3),
+                  ),
+            ),
+          ),
+          const SizedBox(height: 8),
         ],
       ),
     );

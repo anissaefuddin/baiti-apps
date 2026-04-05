@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../core/storage/local_storage.dart';
+import '../../../settings/presentation/screens/setup_screen.dart';
 import '../providers/auth_provider.dart';
 
 /// Entry screen shown briefly on every cold start while the session is resolved.
@@ -118,6 +119,13 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                 'Manajemen Penginapan',
                 style: textTheme.bodyMedium?.copyWith(
                   color: scheme.onPrimary.withOpacity(0.75),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'v${AppInfo.version} (${AppInfo.buildCode})',
+                style: textTheme.bodySmall?.copyWith(
+                  color: scheme.onPrimary.withOpacity(0.45),
                 ),
               ),
 

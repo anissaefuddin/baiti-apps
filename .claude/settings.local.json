@@ -35,7 +35,11 @@
       "Bash(flutter pub:*)",
       "Bash(export PATH=\"$HOME/flutter/bin:$PATH\")",
       "Bash(/Users/ansae/development/flutter/bin/dart run:*)",
-      "Bash(/Users/ansae/development/flutter/bin/flutter build:*)"
+      "Bash(/Users/ansae/development/flutter/bin/flutter build:*)",
+      "Bash(flutter analyze:*)",
+      "Bash(/Users/ansae/flutter/bin/flutter analyze:*)",
+      "Bash(flutter build:*)",
+      "Bash(/Users/ansae/development/flutter/bin/flutter clean:*)"
     ]
   }
 }

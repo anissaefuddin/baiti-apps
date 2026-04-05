@@ -53,7 +53,7 @@ const COL = {
     ID:                0,
     BOOKING_CODE:      1,
     CUSTOMER_ID:       2,
-    ROOM_ID:           3,
+    ROOM_IDS:          3, // JSON array string, e.g. '["id1","id2"]'
     CHECK_IN:          4,
     CHECK_OUT:         5,
     NIGHTS:            6,

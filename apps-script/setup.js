@@ -34,7 +34,7 @@ function setupSheets() {
   ]);
 
   _ensureSheet(ss, SHEET.TRANSACTIONS, [
-    'id', 'booking_code', 'customer_id', 'room_id',
+    'id', 'booking_code', 'customer_id', 'room_ids',
     'check_in', 'check_out', 'nights', 'total_price',
     'dp_amount', 'payment_status', 'calendar_event_id',
     'notes', 'created_by', 'created_at', 'updated_at',

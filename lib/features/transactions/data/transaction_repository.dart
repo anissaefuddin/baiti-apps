@@ -45,9 +45,9 @@ class TransactionRepository {
   }
 
   /// Check room availability for a date range without creating a booking.
-  /// Returns immediately (no lock acquired).
+  /// Sends room_ids array; server accepts both room_id and room_ids.
   Future<AvailabilityResult> checkAvailability({
-    required String roomId,
+    required List<String> roomIds,
     required DateTime checkIn,
     required DateTime checkOut,
     String? excludeId,
@@ -56,7 +56,7 @@ class TransactionRepository {
       action: 'transactions.checkAvailability',
       token: await _freshToken(),
       data: {
-        'room_id':   roomId,
+        'room_ids':  roomIds,
         'check_in':  _fmtDate(checkIn),
         'check_out': _fmtDate(checkOut),
         if (excludeId != null) 'exclude_id': excludeId,
@@ -64,34 +64,52 @@ class TransactionRepository {
     );
     final d = response['data'] as Map<String, dynamic>;
     final available = d['available'] as bool? ?? false;
-    final conflict  = d['conflict'] as Map<String, dynamic>?;
+    final conflict = d['conflict'] as Map<String, dynamic>?;
     return AvailabilityResult(
-      available:    available,
-      conflictCode: conflict?['booking_code'] as String?,
+      available:          available,
+      conflictCode:       conflict?['booking_code'] as String?,
+      conflictRoomNames:  (conflict?['room_names'] as List<dynamic>?)
+                              ?.map((e) => e.toString())
+                              .toList(),
+      conflictCheckIn:    conflict?['check_in'] != null
+                              ? DateTime.tryParse(conflict!['check_in'].toString())
+                              : null,
+      conflictCheckOut:   conflict?['check_out'] != null
+                              ? DateTime.tryParse(conflict!['check_out'].toString())
+                              : null,
     );
   }
 
-  /// Create a new booking. Returns the created [TransactionModel] (with
-  /// denormalized customer_name and room_name).
+  /// Create a new booking (supports multiple rooms).
+  /// Passes the user's OAuth access token so the calendar event is created
+  /// on their own Google Calendar, not the deployer's.
   Future<TransactionModel> create({
     required String customerId,
-    required String roomId,
+    required List<String> roomIds,
     required DateTime checkIn,
     required DateTime checkOut,
     String notes = '',
   }) async {
+    // Get user's OAuth access token for calendar event creation.
+    final accessToken = await _auth.getFreshAccessToken();
+
     final response = await _api.post(
       action: 'transactions.create',
       token: await _freshToken(),
       data: {
         'customer_id': customerId,
-        'room_id':     roomId,
+        'room_ids':    roomIds,
         'check_in':    _fmtDate(checkIn),
         'check_out':   _fmtDate(checkOut),
         'notes':       notes,
+        if (accessToken != null) 'calendar_access_token': accessToken,
       },
     );
-    return TransactionModel.fromJson(response['data'] as Map<String, dynamic>);
+    final d = response['data'] as Map<String, dynamic>;
+    // calendar_error is non-null when the event could not be created.
+    // The booking itself is already saved — surface as a transient warning.
+    return TransactionModel.fromJson(d,
+        calendarError: d['calendar_error'] as String?);
   }
 
   /// Format [DateTime] as 'YYYY-MM-DD' (date-only, no time component).

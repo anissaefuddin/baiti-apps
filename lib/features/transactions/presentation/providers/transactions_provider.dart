@@ -27,13 +27,13 @@ class TransactionsNotifier extends AsyncNotifier<List<TransactionModel>> {
   }
 
   Future<AvailabilityResult> checkAvailability({
-    required String roomId,
+    required List<String> roomIds,
     required DateTime checkIn,
     required DateTime checkOut,
   }) =>
       _guard(
         () => ref.read(transactionRepositoryProvider).checkAvailability(
-              roomId:   roomId,
+              roomIds:  roomIds,
               checkIn:  checkIn,
               checkOut: checkOut,
             ),
@@ -41,7 +41,7 @@ class TransactionsNotifier extends AsyncNotifier<List<TransactionModel>> {
 
   Future<TransactionModel> create({
     required String customerId,
-    required String roomId,
+    required List<String> roomIds,
     required DateTime checkIn,
     required DateTime checkOut,
     String notes = '',
@@ -49,7 +49,7 @@ class TransactionsNotifier extends AsyncNotifier<List<TransactionModel>> {
     final txn = await _guard(
       () => ref.read(transactionRepositoryProvider).create(
             customerId: customerId,
-            roomId:     roomId,
+            roomIds:    roomIds,
             checkIn:    checkIn,
             checkOut:   checkOut,
             notes:      notes,

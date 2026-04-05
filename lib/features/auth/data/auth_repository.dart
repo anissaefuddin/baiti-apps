@@ -44,7 +44,7 @@ class AuthRepository {
     scopes: [
       'email',
       'profile',
-      'https://www.googleapis.com/auth/calendar',
+      'https://www.googleapis.com/auth/calendar.events',
     ],
   );
 
@@ -80,11 +80,7 @@ class AuthRepository {
   }
 
   /// Get a fresh idToken from the currently signed-in Google account.
-  ///
-  /// [account] is optional — uses the currently signed-in account if null.
   /// Returns null if no Google session is active.
-  ///
-  /// Used by [ApiService] (future) to inject fresh tokens per request.
   Future<String?> getFreshToken() async {
     final account = _googleSignIn.currentUser ?? await silentSignIn();
     if (account == null) return null;
@@ -92,6 +88,40 @@ class AuthRepository {
     try {
       final auth = await account.authentication;
       return auth.idToken;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Get a fresh OAuth2 access token from the currently signed-in Google account.
+  ///
+  /// On Android, declared scopes in [GoogleSignIn] are not automatically
+  /// re-requested for existing sessions. We call [requestScopes] to ensure
+  /// the calendar scope is actually granted before fetching the token.
+  ///
+  /// Returns null if no Google session is active or the user denies calendar access.
+  Future<String?> getFreshAccessToken() async {
+    final account = _googleSignIn.currentUser ?? await silentSignIn();
+    if (account == null) return null;
+
+    try {
+      const calendarScope = 'https://www.googleapis.com/auth/calendar.events';
+
+      // Check whether the calendar scope is already granted.
+      final hasScope =
+          await _googleSignIn.canAccessScopes([calendarScope]);
+
+      if (!hasScope) {
+        // Show the one-time consent dialog; returns false if the user denies.
+        final granted =
+            await _googleSignIn.requestScopes([calendarScope]);
+        if (!granted) return null;
+      }
+
+      // Clear cached auth so we get a fresh token that includes the new scope.
+      await account.clearAuthCache();
+      final auth = await account.authentication;
+      return auth.accessToken;
     } catch (_) {
       return null;
     }

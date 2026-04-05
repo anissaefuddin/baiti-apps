@@ -3,13 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../core/router/app_router.dart';
+import '../../../../core/services/backend_status_service.dart';
 import '../../../../core/storage/local_storage.dart';
 
 /// App-level constants — used in the About section and for display elsewhere.
 abstract class AppInfo {
   static const appName   = 'Baiti App';
-  static const version   = '1.0.0';
-  static const buildCode = '1';
+  static const version   = '1.1.0';
+  static const buildCode = '2';
   static const developer = 'maloka.app';
   static const copyright = '© 2026 maloka.app. All rights reserved.';
   static const packageId = 'app.maloka.catat';
@@ -105,6 +106,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
               ),
               keyboardType: TextInputType.url,
               autocorrect: false,
+              onChanged: (_) => ref.read(backendStatusProvider.notifier).reset(),
               validator: (v) {
                 if (v == null || v.trim().isEmpty) return 'URL wajib diisi';
                 final uri = Uri.tryParse(v.trim());
@@ -114,7 +116,9 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                 return null;
               },
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
+            _BackendStatusCard(urlController: _urlController),
+            const SizedBox(height: 12),
 
             TextFormField(
               controller: _calendarController,
@@ -157,11 +161,153 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => context.push(AppRoutes.about),
             ),
+            const SizedBox(height: 8),
+            Center(
+              child: Text(
+                'v${AppInfo.version} (${AppInfo.buildCode})',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant.withOpacity(0.6),
+                    ),
+              ),
+            ),
             const SizedBox(height: 16),
           ],
         ),
       ),
     );
+  }
+}
+
+// ── Backend status card ───────────────────────────────────────────────────────
+
+class _BackendStatusCard extends ConsumerWidget {
+  const _BackendStatusCard({required this.urlController});
+  final TextEditingController urlController;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final status = ref.watch(backendStatusProvider);
+    final scheme = Theme.of(context).colorScheme;
+    final isChecking = status.status == BackendStatusCode.checking;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Row(
+        children: [
+          _StatusDot(status.status),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _StatusText(status),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.tonal(
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onPressed: isChecking
+                ? null
+                : () {
+                    final url = urlController.text.trim();
+                    if (url.isEmpty) return;
+                    ref.read(backendStatusProvider.notifier).check(url);
+                  },
+            child: isChecking
+                ? const SizedBox(
+                    height: 16,
+                    width: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Cek', style: TextStyle(fontSize: 13)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusDot extends StatelessWidget {
+  const _StatusDot(this.code);
+  final BackendStatusCode code;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (code) {
+      BackendStatusCode.active   => Colors.green,
+      BackendStatusCode.inactive => Colors.red,
+      BackendStatusCode.checking => Colors.orange,
+      BackendStatusCode.idle     => Colors.grey,
+    };
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+  }
+}
+
+class _StatusText extends StatelessWidget {
+  const _StatusText(this.status);
+  final BackendStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
+
+    return switch (status.status) {
+      BackendStatusCode.idle => Text(
+          'Tekan "Cek" untuk verifikasi koneksi',
+          style: textTheme.bodySmall?.copyWith(color: muted),
+        ),
+      BackendStatusCode.checking => Text(
+          'Memeriksa koneksi…',
+          style: textTheme.bodySmall?.copyWith(color: muted),
+        ),
+      BackendStatusCode.active => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Server aktif',
+              style: textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            Text(
+              'HTTP ${status.httpCode} · ${status.responseTime} ms',
+              style: textTheme.bodySmall?.copyWith(color: muted),
+            ),
+          ],
+        ),
+      BackendStatusCode.inactive => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Server tidak dapat dijangkau',
+              style: textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: Colors.red,
+              ),
+            ),
+            if (status.error != null)
+              Text(
+                status.error!,
+                style: textTheme.bodySmall?.copyWith(color: muted),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              )
+            else
+              Text(
+                'HTTP ${status.httpCode}',
+                style: textTheme.bodySmall?.copyWith(color: muted),
+              ),
+          ],
+        ),
+    };
   }
 }
 

@@ -39,7 +39,7 @@ class PdfService {
   static Future<Uint8List> generateInvoice({
     required TransactionModel transaction,
     CustomerModel? customer,
-    RoomModel? room,
+    List<RoomModel> rooms = const [],
     required List<PaymentModel> payments,
   }) async {
     final doc = pw.Document(
@@ -53,7 +53,7 @@ class PdfService {
         build: (_) => _InvoicePage(
           t: transaction,
           customer: customer,
-          room: room,
+          rooms: rooms,
           payments: payments,
         ).build(),
       ),
@@ -64,7 +64,7 @@ class PdfService {
   static Future<Uint8List> generateReceipt({
     required TransactionModel transaction,
     CustomerModel? customer,
-    RoomModel? room,
+    List<RoomModel> rooms = const [],
     required List<PaymentModel> payments,
   }) async {
     final doc = pw.Document(
@@ -78,7 +78,7 @@ class PdfService {
         build: (_) => _ReceiptPage(
           t: transaction,
           customer: customer,
-          room: room,
+          rooms: rooms,
           payments: payments,
         ).build(),
       ),
@@ -278,13 +278,13 @@ class _InvoicePage {
   const _InvoicePage({
     required this.t,
     required this.customer,
-    required this.room,
+    required this.rooms,
     required this.payments,
   });
 
   final TransactionModel t;
   final CustomerModel? customer;
-  final RoomModel? room;
+  final List<RoomModel> rooms;
   final List<PaymentModel> payments;
 
   pw.Widget build() {
@@ -429,14 +429,61 @@ class _InvoicePage {
   }
 
   pw.Widget _roomTable() {
-    final pricePerNight = room?.pricePerNight ?? (t.totalPrice / t.nights);
+    // Build one data row per room; fall back to summary row when no room data.
+    final List<pw.TableRow> dataRows;
+
+    if (rooms.isNotEmpty) {
+      dataRows = rooms.map((r) {
+        final subtotal = r.pricePerNight * t.nights;
+        return pw.TableRow(
+          children: [
+            PdfService._cell(r.name),
+            PdfService._cellR('${t.nights}'),
+            PdfService._cellR(PdfService._fmt(r.pricePerNight)),
+            PdfService._cellR(PdfService._fmt(subtotal)),
+          ],
+        );
+      }).toList();
+
+      // Total row (only when multiple rooms)
+      if (rooms.length > 1) {
+        dataRows.add(
+          pw.TableRow(
+            decoration: const pw.BoxDecoration(color: _C.greyLight),
+            children: [
+              PdfService._cell(
+                '${rooms.length} kamar × ${t.nights} malam',
+                bold: true,
+              ),
+              PdfService._cell(''),
+              PdfService._cell('Total', bold: true),
+              PdfService._cellR(PdfService._fmt(t.totalPrice), bold: true),
+            ],
+          ),
+        );
+      }
+    } else {
+      // Fallback: no room objects, use transaction summary
+      final pricePerNight = t.nights > 0 ? t.totalPrice / t.nights : 0.0;
+      dataRows = [
+        pw.TableRow(
+          children: [
+            PdfService._cell(t.roomName),
+            PdfService._cellR('${t.nights}'),
+            PdfService._cellR(PdfService._fmt(pricePerNight)),
+            PdfService._cellR(PdfService._fmt(t.totalPrice), bold: true),
+          ],
+        ),
+      ];
+    }
+
     return pw.Table(
       border: pw.TableBorder.all(color: _C.border, width: 0.5),
-      columnWidths: {
-        0: const pw.FlexColumnWidth(3),
-        1: const pw.FixedColumnWidth(40),
-        2: const pw.FlexColumnWidth(2),
-        3: const pw.FlexColumnWidth(2),
+      columnWidths: const {
+        0: pw.FlexColumnWidth(3),
+        1: pw.FixedColumnWidth(40),
+        2: pw.FlexColumnWidth(2),
+        3: pw.FlexColumnWidth(2),
       },
       children: [
         // Header row
@@ -449,15 +496,7 @@ class _InvoicePage {
             PdfService._cellR('Subtotal', bold: true),
           ],
         ),
-        // Data row
-        pw.TableRow(
-          children: [
-            PdfService._cell(room?.name ?? t.roomName),
-            PdfService._cellR('${t.nights}'),
-            PdfService._cellR(PdfService._fmt(pricePerNight)),
-            PdfService._cellR(PdfService._fmt(t.totalPrice), bold: true),
-          ],
-        ),
+        ...dataRows,
       ],
     );
   }
@@ -551,13 +590,13 @@ class _ReceiptPage {
   const _ReceiptPage({
     required this.t,
     required this.customer,
-    required this.room,
+    required this.rooms,
     required this.payments,
   });
 
   final TransactionModel t;
   final CustomerModel? customer;
-  final RoomModel? room;
+  final List<RoomModel> rooms;
   final List<PaymentModel> payments;
 
   pw.Widget build() {
@@ -670,12 +709,23 @@ class _ReceiptPage {
         pw.Padding(
           padding: const pw.EdgeInsets.symmetric(horizontal: 4),
           child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
-              PdfService._infoRow(
-                  'Kamar', room?.name ?? t.roomName, bold: true),
+              // Room list — one info row per room
+              if (rooms.isNotEmpty) ...[
+                for (int i = 0; i < rooms.length; i++) ...[
+                  PdfService._infoRow(
+                    rooms.length == 1 ? 'Kamar' : 'Kamar ${i + 1}',
+                    '${rooms[i].name}  (${PdfService._fmt(rooms[i].pricePerNight)}/malam)',
+                    bold: true,
+                  ),
+                  if (i < rooms.length - 1) pw.SizedBox(height: 4),
+                ],
+              ] else ...[
+                PdfService._infoRow('Kamar', t.roomName, bold: true),
+              ],
               pw.SizedBox(height: 5),
-              PdfService._infoRow('Check-in',
-                  PdfService._fmtDate(t.checkIn)),
+              PdfService._infoRow('Check-in',  PdfService._fmtDate(t.checkIn)),
               pw.SizedBox(height: 5),
               PdfService._infoRow('Check-out',
                   '${PdfService._fmtDate(t.checkOut)} (${t.nights} malam)'),

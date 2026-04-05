@@ -35,9 +35,10 @@ class TransactionDetailScreen extends ConsumerWidget {
     final customer = ref.watch(customersProvider).valueOrNull
         ?.where((c) => c.id == t.customerId)
         .firstOrNull;
-    final room = ref.watch(roomsProvider).valueOrNull
-        ?.where((r) => r.id == t.roomId)
-        .firstOrNull;
+    final rooms = ref.watch(roomsProvider).valueOrNull
+            ?.where((r) => t.roomIds.contains(r.id))
+            .toList() ??
+        [];
 
     final isPaid = t.paymentStatus == PaymentStatus.paid;
 
@@ -109,18 +110,27 @@ class TransactionDetailScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 12),
 
-          // ── Room ──────────────────────────────────────────────────────
+          // ── Room(s) ───────────────────────────────────────────────────
           _SectionCard(
             icon: Icons.meeting_room_outlined,
             title: 'Kamar',
-            child: room != null
+            child: rooms.isNotEmpty
                 ? Column(
                     children: [
-                      _InfoRow(label: 'Nama', value: room.name),
-                      const SizedBox(height: 8),
-                      _InfoRow(label: 'Harga / Malam', value: room.formattedPrice),
-                      const SizedBox(height: 8),
-                      _InfoRow(label: 'Kapasitas', value: '${room.capacity} tamu'),
+                      for (int i = 0; i < rooms.length; i++) ...[
+                        if (i > 0) const Divider(height: 20),
+                        _InfoRow(label: 'Nama', value: rooms[i].name),
+                        const SizedBox(height: 8),
+                        _InfoRow(
+                          label: 'Harga / Malam',
+                          value: rooms[i].formattedPrice,
+                        ),
+                        const SizedBox(height: 8),
+                        _InfoRow(
+                          label: 'Kapasitas',
+                          value: '${rooms[i].capacity} tamu',
+                        ),
+                      ],
                     ],
                   )
                 : _InfoRow(label: 'Nama Kamar', value: t.roomName),
